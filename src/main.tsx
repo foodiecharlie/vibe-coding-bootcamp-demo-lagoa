@@ -157,7 +157,7 @@ const filterLabels: Record<Filter, string> = {
   new: "New",
 };
 
-function App() {
+export function App() {
   const [activeRole, setActiveRole] = useState<Role>("attendee");
   const [questions, setQuestions] = useState(initialQuestions);
   const [webinarId, setWebinarId] = useState<string | null>(null);
@@ -471,9 +471,10 @@ function App() {
   function publishAnswer(questionId: string, delayed: boolean) {
     const body = answerDrafts[questionId]?.trim();
 
-    if (!body) {
+    if (!body && !delayed) {
       return;
     }
+    const answerBody = body || "This answer is scheduled for the post-webinar recap.";
 
     setQuestions((current) =>
       current.map((question) =>
@@ -486,7 +487,7 @@ function App() {
                 {
                   id: crypto.randomUUID(),
                   responder: activeRole === "speaker" ? "Ari, speaker" : "Sam, assistant",
-                  body,
+                  body: answerBody,
                   upvotes: 0,
                   visibleAt: delayed ? "Scheduled after webinar" : "Visible now",
                 },
@@ -500,7 +501,7 @@ function App() {
       void supabase.from("answers").insert({
         question_id: questionId,
         responder_name: activeRole === "speaker" ? "Ari, speaker" : "Sam, assistant",
-        body,
+        body: answerBody,
         upvotes: 0,
         visible_at: delayed ? daysFromNow(8).toISOString() : new Date().toISOString(),
       });
@@ -1114,7 +1115,7 @@ function QuestionSummary({ question }: { question: Question }) {
         <span>rank {getQuestionRank(question)}</span>
       </div>
       {question.status === "delayed" && (
-        <div className="delayed-notice">
+        <div className="delayed-notice" role="status" aria-label="Scheduled response">
           <Clock3 size={15} />
           Scheduled response. Attendees should check back after the webinar or watch for the shared recap link.
         </div>
@@ -1160,8 +1161,12 @@ function relativeTime(date: Date) {
   return `${days}d ago`;
 }
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+const root = document.getElementById("root");
+
+if (root) {
+  ReactDOM.createRoot(root).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  );
+}
