@@ -15,6 +15,8 @@ create table if not exists questions (
   body text not null,
   status text not null default 'open' check (status in ('open', 'answered', 'delayed', 'archived')),
   priority text not null default 'community' check (priority in ('community', 'host_pick', 'needs_followup')),
+  tags text[] not null default '{}',
+  quiet_score int not null default 0,
   upvotes int not null default 0,
   created_at timestamptz not null default now()
 );
@@ -36,3 +38,6 @@ create table if not exists follow_ups (
   body text not null,
   created_at timestamptz not null default now()
 );
+
+alter table questions add column if not exists tags text[] not null default '{}';
+alter table questions add column if not exists quiet_score int not null default 0;

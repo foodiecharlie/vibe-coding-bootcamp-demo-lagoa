@@ -19,7 +19,7 @@ Introvert-friendly webinar Q&A for collecting thoughtful written questions befor
 4. Copy `.env.example` to `.env.local`.
 5. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
 
-When those variables are present, the app loads the first webinar from Supabase, creates one if none exists, and persists questions, answers, follow-ups, votes, status changes, and host picks. Without them, it uses local sample state.
+When those variables are present, the app loads the first webinar from Supabase, creates one if none exists, and persists questions, tags, answers, follow-ups, votes, status changes, and host picks. Without them, it uses local sample state.
 
 ## Run locally
 

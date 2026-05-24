@@ -320,7 +320,9 @@ textarea:focus {
 }
 
 .name-input,
-.follow-up-form input {
+.follow-up-form input,
+.tag-input-row input,
+.tag-editor input {
   background: #f8faf6;
   border: 1px solid #dbe5dc;
   border-radius: 8px;
@@ -331,9 +333,39 @@ textarea:focus {
 }
 
 .name-input:focus,
-.follow-up-form input:focus {
+.follow-up-form input:focus,
+.tag-input-row input:focus,
+.tag-editor input:focus {
   border-color: #0f6b56;
   box-shadow: 0 0 0 3px rgba(15, 107, 86, 0.14);
+}
+
+.tag-input-row,
+.tag-editor {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: auto minmax(0, 1fr);
+  margin-top: 10px;
+}
+
+.tag-input-row {
+  color: #0f6b56;
+}
+
+.tag-editor {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  margin: 12px 0;
+}
+
+.tag-editor button {
+  background: #143c31;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 800;
+  min-height: 38px;
+  padding: 0 12px;
 }
 
 .composer-actions button,
@@ -382,7 +414,7 @@ textarea:focus {
   border: 1px solid #dbe5dc;
   border-radius: 8px;
   display: inline-grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   overflow: hidden;
 }
 
@@ -403,6 +435,42 @@ textarea:focus {
 .question-list {
   display: grid;
   gap: 12px;
+}
+
+.tag-cloud,
+.question-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.tag-cloud {
+  margin: -2px 0 12px;
+}
+
+.tag-cloud span,
+.question-tags span {
+  align-items: center;
+  background: #eef6f1;
+  border: 1px solid #d3e8dd;
+  border-radius: 8px;
+  color: #12624f;
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-weight: 800;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 8px;
+}
+
+.tag-cloud strong {
+  background: #fff;
+  border-radius: 999px;
+  color: #596a63;
+  font-size: 0.72rem;
+  min-width: 18px;
+  padding: 1px 5px;
+  text-align: center;
 }
 
 .question-card {
@@ -457,6 +525,10 @@ textarea:focus {
   color: #19241f;
   font-size: 1rem;
   line-height: 1.38;
+  margin-bottom: 10px;
+}
+
+.question-tags {
   margin-bottom: 12px;
 }
 
@@ -562,6 +634,21 @@ textarea:focus {
 
 .follow-up-list p:first-child {
   margin-top: 0;
+}
+
+.delayed-notice {
+  align-items: center;
+  background: #fff4db;
+  border: 1px solid #eed89f;
+  border-radius: 8px;
+  color: #755019;
+  display: flex;
+  font-size: 0.84rem;
+  font-weight: 700;
+  gap: 8px;
+  line-height: 1.35;
+  margin-top: 12px;
+  padding: 10px;
 }
 
 .follow-up-form {
@@ -713,6 +800,7 @@ textarea:focus {
   }
 
   .segmented {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     width: 100%;
   }
 

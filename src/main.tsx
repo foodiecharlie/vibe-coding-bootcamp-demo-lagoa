@@ -13,6 +13,7 @@ import {
   ShieldCheck,
   Sparkles,
   Star,
+  Tag,
   UserRoundCheck,
   UsersRound,
 } from "lucide-react";
@@ -22,7 +23,7 @@ import "./styles.css";
 type Role = "attendee" | "speaker" | "assistant" | "organizer";
 type QuestionStatus = "open" | "answered" | "delayed";
 type QuestionPriority = "community" | "host_pick" | "needs_followup";
-type Filter = "top" | "new" | "open";
+type Filter = "balanced" | "unanswered" | "followups" | "late" | "new";
 
 type Answer = {
   id: string;
@@ -45,6 +46,8 @@ type Question = {
   status: QuestionStatus;
   priority: QuestionPriority;
   upvotes: number;
+  quietScore: number;
+  tags: string[];
   createdAt: Date;
   answers: Answer[];
   followUps: FollowUp[];
@@ -97,6 +100,8 @@ const initialQuestions: Question[] = [
     status: "answered",
     priority: "host_pick",
     upvotes: 48,
+    quietScore: 1,
+    tags: ["AI readiness", "Support"],
     createdAt: daysAgo(2),
     answers: [
       {
@@ -116,6 +121,8 @@ const initialQuestions: Question[] = [
     status: "delayed",
     priority: "needs_followup",
     upvotes: 35,
+    quietScore: 5,
+    tags: ["Stakeholders", "Launch review"],
     createdAt: daysAgo(1),
     answers: [
       {
@@ -138,6 +145,8 @@ const initialQuestions: Question[] = [
     status: "open",
     priority: "community",
     upvotes: 21,
+    quietScore: 4,
+    tags: ["Live Q&A", "Inclusion"],
     createdAt: hoursAgo(4),
     answers: [],
     followUps: [],
@@ -156,17 +165,27 @@ const priorityLabels: Record<QuestionPriority, string> = {
   needs_followup: "Needs follow-up",
 };
 
+const filterLabels: Record<Filter, string> = {
+  balanced: "Balanced",
+  unanswered: "Unanswered",
+  followups: "Follow-ups",
+  late: "Late",
+  new: "New",
+};
+
 function App() {
   const [activeRole, setActiveRole] = useState<Role>("attendee");
   const [questions, setQuestions] = useState(initialQuestions);
   const [webinarId, setWebinarId] = useState<string | null>(null);
+  const [supportsQuestionTags, setSupportsQuestionTags] = useState(true);
   const [connectionStatus, setConnectionStatus] = useState(
     hasSupabaseConfig ? "Connecting to Supabase..." : "Using local sample data",
   );
-  const [filter, setFilter] = useState<Filter>("top");
+  const [filter, setFilter] = useState<Filter>("balanced");
   const [questionText, setQuestionText] = useState("");
   const [askAnonymously, setAskAnonymously] = useState(true);
   const [authorName, setAuthorName] = useState("");
+  const [tagText, setTagText] = useState("");
   const [answerDrafts, setAnswerDrafts] = useState<Record<string, string>>({});
 
   const qaWindow = getQaWindow(webinar.startsAt, webinar.qaWindowDaysBefore, webinar.qaWindowDaysAfter);
@@ -216,42 +235,76 @@ function App() {
 
       setWebinarId(resolvedWebinar.id);
 
-      const { data: questionRows, error: questionError } = await supabase
+      let tagSchemaAvailable = true;
+      let questionRows: QuestionRow[] | null = null;
+      let { data: richQuestionRows, error: questionError } = await supabase
         .from("questions")
         .select(
-          "id, author_name, body, status, priority, upvotes, created_at, answers(id, responder_name, body, upvotes, visible_at, created_at), follow_ups(id, author_name, body, created_at)",
+          "id, author_name, body, status, priority, tags, quiet_score, upvotes, created_at, answers(id, responder_name, body, upvotes, visible_at, created_at), follow_ups(id, author_name, body, created_at)",
         )
         .eq("webinar_id", resolvedWebinar.id)
         .order("created_at", { ascending: false });
+      questionRows = richQuestionRows as QuestionRow[] | null;
 
       if (questionError) {
-        setConnectionStatus(`Supabase error: ${questionError.message}`);
-        return;
+        tagSchemaAvailable = false;
+        setSupportsQuestionTags(false);
+        const legacyResult = await supabase
+          .from("questions")
+          .select(
+            "id, author_name, body, status, priority, upvotes, created_at, answers(id, responder_name, body, upvotes, visible_at, created_at), follow_ups(id, author_name, body, created_at)",
+          )
+          .eq("webinar_id", resolvedWebinar.id)
+          .order("created_at", { ascending: false });
+
+        questionRows = legacyResult.data as QuestionRow[] | null;
+        questionError = legacyResult.error;
+
+        if (questionError) {
+          setConnectionStatus(`Supabase error: ${questionError.message}`);
+          return;
+        }
       }
 
       if (questionRows && questionRows.length > 0) {
         setQuestions(questionRows.map(mapQuestionRow));
       }
 
-      setConnectionStatus("Connected to Supabase");
+      setConnectionStatus(
+        tagSchemaAvailable ? "Connected to Supabase" : "Connected to Supabase. Run schema.sql to persist tags.",
+      );
     }
 
     void loadSupabaseData();
   }, []);
 
   const sortedQuestions = useMemo(() => {
-    const visible = filter === "open" ? questions.filter((question) => question.status === "open") : questions;
+    const visible =
+      filter === "unanswered"
+        ? questions.filter((question) => question.status !== "answered")
+        : filter === "followups"
+          ? questions.filter((question) => question.followUps.length > 0 || question.priority === "needs_followup")
+          : filter === "late"
+            ? questions.filter((question) => question.status === "delayed" || question.createdAt < daysAgo(1))
+            : questions;
 
     return [...visible].sort((left, right) => {
       if (filter === "new") {
         return right.createdAt.getTime() - left.createdAt.getTime();
       }
 
-      const leftBoost = left.priority === "host_pick" ? 1000 : 0;
-      const rightBoost = right.priority === "host_pick" ? 1000 : 0;
-      return right.upvotes + rightBoost - (left.upvotes + leftBoost);
+      return getQuestionRank(right) - getQuestionRank(left);
     });
   }, [filter, questions]);
+
+  const tagCounts = useMemo(() => {
+    return questions.reduce<Record<string, number>>((counts, question) => {
+      question.tags.forEach((tag) => {
+        counts[tag] = (counts[tag] ?? 0) + 1;
+      });
+      return counts;
+    }, {});
+  }, [questions]);
 
   const stats = useMemo(
     () => ({
@@ -271,6 +324,7 @@ function App() {
     if (!trimmed || !isOpen) {
       return;
     }
+    const tags = parseTags(tagText);
 
     setQuestions((current) => [
       {
@@ -280,6 +334,8 @@ function App() {
         status: "open",
         priority: "community",
         upvotes: 0,
+        quietScore: tags.length > 0 ? 1 : 2,
+        tags,
         createdAt: new Date(),
         answers: [],
         followUps: [],
@@ -288,17 +344,20 @@ function App() {
     ]);
 
     if (supabase && webinarId) {
-      void supabase.from("questions").insert({
+      const payload = {
         webinar_id: webinarId,
         author_name: askAnonymously ? null : authorName.trim() || "Attendee",
         body: trimmed,
         status: "open",
         priority: "community",
         upvotes: 0,
-      });
+        ...(supportsQuestionTags ? { tags, quiet_score: tags.length > 0 ? 1 : 2 } : {}),
+      };
+      void supabase.from("questions").insert(payload);
     }
 
     setQuestionText("");
+    setTagText("");
     setFilter("new");
   }
 
@@ -363,6 +422,28 @@ function App() {
         body: trimmed,
       });
       void supabase.from("questions").update({ priority: "needs_followup" }).eq("id", questionId);
+    }
+  }
+
+  function addTag(questionId: string, tag: string) {
+    const cleaned = cleanTag(tag);
+    if (!cleaned) {
+      return;
+    }
+
+    let nextTags: string[] = [];
+    setQuestions((current) =>
+      current.map((question) => {
+        if (question.id !== questionId) {
+          return question;
+        }
+        nextTags = Array.from(new Set([...question.tags, cleaned]));
+        return { ...question, tags: nextTags, quietScore: Math.max(question.quietScore, 2) };
+      }),
+    );
+
+    if (supabase && supportsQuestionTags && isUuid(questionId)) {
+      void supabase.from("questions").update({ tags: nextTags, quiet_score: 2 }).eq("id", questionId);
     }
   }
 
@@ -437,7 +518,7 @@ function App() {
         responder_name: activeRole === "speaker" ? "Ari, speaker" : "Sam, assistant",
         body,
         upvotes: 0,
-        visible_at: delayed ? webinar.startsAt.toISOString() : new Date().toISOString(),
+        visible_at: delayed ? daysFromNow(8).toISOString() : new Date().toISOString(),
       });
       void supabase.from("questions").update({ status: delayed ? "delayed" : "answered" }).eq("id", questionId);
     }
@@ -496,7 +577,10 @@ function App() {
           setAuthorName={setAuthorName}
           setFilter={setFilter}
           setQuestionText={setQuestionText}
+          setTagText={setTagText}
           submitQuestion={submitQuestion}
+          tagCounts={tagCounts}
+          tagText={tagText}
           upvoteAnswer={upvoteAnswer}
           upvoteQuestion={upvoteQuestion}
         />
@@ -515,6 +599,7 @@ function App() {
       {activeRole === "assistant" && (
         <AssistantView
           questions={questions}
+          addTag={addTag}
           setQuestionPriority={setQuestionPriority}
           setQuestionStatus={setQuestionStatus}
           toggleHostPick={toggleHostPick}
@@ -546,7 +631,10 @@ function AttendeeView({
   setAuthorName,
   setFilter,
   setQuestionText,
+  setTagText,
   submitQuestion,
+  tagCounts,
+  tagText,
   upvoteAnswer,
   upvoteQuestion,
 }: {
@@ -561,7 +649,10 @@ function AttendeeView({
   setAuthorName: (value: string) => void;
   setFilter: (value: Filter) => void;
   setQuestionText: (value: string) => void;
+  setTagText: (value: string) => void;
   submitQuestion: (event: FormEvent<HTMLFormElement>) => void;
+  tagCounts: Record<string, number>;
+  tagText: string;
   upvoteAnswer: (questionId: string, answerId: string) => void;
   upvoteQuestion: (questionId: string) => void;
 }) {
@@ -582,6 +673,15 @@ function AttendeeView({
           placeholder="What would you like the host to answer?"
           value={questionText}
         />
+        <div className="tag-input-row">
+          <Tag size={16} />
+          <input
+            aria-label="Question tags"
+            onChange={(event) => setTagText(event.target.value)}
+            placeholder="Add tags: AI readiness, Launch review"
+            value={tagText}
+          />
+        </div>
         <div className="composer-actions">
           <div className="identity-row">
             <label className="checkbox-row">
@@ -613,6 +713,7 @@ function AttendeeView({
         filter={filter}
         questions={questions}
         setFilter={setFilter}
+        tagCounts={tagCounts}
         renderQuestion={(question) => (
           <QuestionCard
             addFollowUp={addFollowUp}
@@ -668,7 +769,7 @@ function SpeakerView({
                 </button>
                 <button onClick={() => publishAnswer(question.id, true)} type="button">
                   <Clock3 size={15} />
-                  Delay
+                  Schedule recap
                 </button>
                 <button onClick={() => setQuestionStatus(question.id, "open")} type="button">
                   <MessageCircle size={15} />
@@ -692,11 +793,13 @@ function SpeakerView({
 }
 
 function AssistantView({
+  addTag,
   questions,
   setQuestionPriority,
   setQuestionStatus,
   toggleHostPick,
 }: {
+  addTag: (questionId: string, tag: string) => void;
   questions: Question[];
   setQuestionPriority: (questionId: string, priority: QuestionPriority) => void;
   setQuestionStatus: (questionId: string, status: QuestionStatus) => void;
@@ -715,6 +818,7 @@ function AssistantView({
           {questions.map((question) => (
             <article className="moderation-card" key={question.id}>
               <QuestionSummary question={question} />
+              <TagEditor questionId={question.id} onAddTag={addTag} />
               <div className="triage-actions">
                 <button onClick={() => toggleHostPick(question.id)} type="button">
                   <Star size={15} />
@@ -819,31 +923,45 @@ function QueueSection({
   questions,
   renderQuestion,
   setFilter,
+  tagCounts,
 }: {
   filter: Filter;
   questions: Question[];
   renderQuestion: (question: Question) => React.ReactNode;
   setFilter: (value: Filter) => void;
+  tagCounts: Record<string, number>;
 }) {
   return (
     <section className="question-column">
       <div className="section-heading">
         <div>
-          <p className="eyebrow">Community queue</p>
-          <h2>Ranked questions</h2>
+          <p className="eyebrow">Discovery queue</p>
+          <h2>Questions worth finding</h2>
         </div>
         <div className="segmented" aria-label="Question filter">
-          {(["top", "new", "open"] as Filter[]).map((option) => (
+          {(["balanced", "unanswered", "followups", "late", "new"] as Filter[]).map((option) => (
             <button
               className={filter === option ? "active" : ""}
               key={option}
               onClick={() => setFilter(option)}
               type="button"
             >
-              {option[0].toUpperCase() + option.slice(1)}
+              {filterLabels[option]}
             </button>
           ))}
         </div>
+      </div>
+      <div className="tag-cloud" aria-label="Popular question tags">
+        {Object.entries(tagCounts)
+          .sort((left, right) => right[1] - left[1])
+          .slice(0, 6)
+          .map(([tag, count]) => (
+            <span key={tag}>
+              <Tag size={13} />
+              {tag}
+              <strong>{count}</strong>
+            </span>
+          ))}
       </div>
       <div className="question-list">{questions.map(renderQuestion)}</div>
     </section>
@@ -866,6 +984,31 @@ function RolePanel({ metrics, title }: { metrics: Array<[string, string]>; title
         ))}
       </div>
     </aside>
+  );
+}
+
+function TagEditor({ onAddTag, questionId }: { onAddTag: (questionId: string, tag: string) => void; questionId: string }) {
+  const [value, setValue] = useState("");
+
+  function submitTag(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    onAddTag(questionId, value);
+    setValue("");
+  }
+
+  return (
+    <form className="tag-editor" onSubmit={submitTag}>
+      <Tag size={15} />
+      <input
+        aria-label="Add moderation tag"
+        onChange={(event) => setValue(event.target.value)}
+        placeholder="Add tag"
+        value={value}
+      />
+      <button disabled={!value.trim()} type="submit">
+        Add
+      </button>
+    </form>
   );
 }
 
@@ -965,6 +1108,14 @@ function QuestionSummary({ question }: { question: Question }) {
         <span>{question.upvotes} votes</span>
       </div>
       <h3>{question.body}</h3>
+      <div className="question-tags">
+        {question.tags.map((tag) => (
+          <span key={tag}>
+            <Tag size={12} />
+            {tag}
+          </span>
+        ))}
+      </div>
       <div className="question-footer">
         <span className={`status ${question.status}`}>
           {question.status === "answered" ? <CheckCircle2 size={14} /> : <Clock3 size={14} />}
@@ -976,7 +1127,14 @@ function QuestionSummary({ question }: { question: Question }) {
         </span>
         <span>{question.answers.length} answers</span>
         <span>{question.followUps.length} follow-ups</span>
+        <span>rank {getQuestionRank(question)}</span>
       </div>
+      {question.status === "delayed" && (
+        <div className="delayed-notice">
+          <Clock3 size={15} />
+          Scheduled response. Attendees should check back after the webinar or watch for the shared recap link.
+        </div>
+      )}
     </>
   );
 }
@@ -996,6 +1154,8 @@ type QuestionRow = {
   body: string;
   status: QuestionStatus;
   priority: QuestionPriority;
+  tags?: string[];
+  quiet_score?: number;
   upvotes: number;
   created_at: string;
   answers?: Array<{
@@ -1022,6 +1182,8 @@ function mapQuestionRow(row: QuestionRow): Question {
     status: row.status,
     priority: row.priority,
     upvotes: row.upvotes,
+    quietScore: row.quiet_score ?? 0,
+    tags: row.tags ?? [],
     createdAt: new Date(row.created_at),
     answers: [...(row.answers ?? [])]
       .sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime())
@@ -1044,6 +1206,26 @@ function mapQuestionRow(row: QuestionRow): Question {
 
 function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function getQuestionRank(question: Question) {
+  const hostPickBoost = question.priority === "host_pick" ? 35 : 0;
+  const unansweredBoost = question.status === "open" ? 18 : question.status === "delayed" ? 10 : 0;
+  const followUpBoost = Math.min(question.followUps.length * 8, 24);
+  const quietBoost = question.quietScore * 6;
+  const tagBoost = Math.min(question.tags.length * 3, 9);
+  const voteScore = Math.min(question.upvotes, 30);
+  const agePenalty = Math.min(Math.floor((Date.now() - question.createdAt.getTime()) / 86_400_000) * 3, 12);
+
+  return voteScore + hostPickBoost + unansweredBoost + followUpBoost + quietBoost + tagBoost - agePenalty;
+}
+
+function parseTags(value: string) {
+  return Array.from(new Set(value.split(",").map(cleanTag).filter(Boolean))).slice(0, 4);
+}
+
+function cleanTag(value: string) {
+  return value.trim().replace(/\s+/g, " ").slice(0, 28);
 }
 
 function getQaWindow(startsAt: Date, daysBefore: number, daysAfter: number) {
