@@ -1,4 +1,4 @@
-import React, { FormEvent, useMemo, useState } from "react";
+import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom/client";
 import {
   ArrowUp,
@@ -16,6 +16,7 @@ import {
   UserRoundCheck,
   UsersRound,
 } from "lucide-react";
+import { hasSupabaseConfig, supabase } from "./supabase";
 import "./styles.css";
 
 type Role = "attendee" | "speaker" | "assistant" | "organizer";
@@ -24,7 +25,7 @@ type QuestionPriority = "community" | "host_pick" | "needs_followup";
 type Filter = "top" | "new" | "open";
 
 type Answer = {
-  id: number;
+  id: string;
   responder: string;
   body: string;
   upvotes: number;
@@ -32,13 +33,13 @@ type Answer = {
 };
 
 type FollowUp = {
-  id: number;
+  id: string;
   author: string;
   body: string;
 };
 
 type Question = {
-  id: number;
+  id: string;
   author: string;
   body: string;
   status: QuestionStatus;
@@ -90,7 +91,7 @@ const roleMeta: Record<Role, { label: string; eyebrow: string; title: string; co
 
 const initialQuestions: Question[] = [
   {
-    id: 1,
+    id: "sample-1",
     author: "Anonymous attendee",
     body: "How should a small product team decide which AI support workflows are ready for customers?",
     status: "answered",
@@ -99,17 +100,17 @@ const initialQuestions: Question[] = [
     createdAt: daysAgo(2),
     answers: [
       {
-        id: 101,
+        id: "sample-answer-1",
         responder: "Ari, speaker",
         body: "Start with the moments where a mistake is recoverable, then move toward higher trust workflows after you have feedback loops in place.",
         upvotes: 18,
         visibleAt: "Visible now",
       },
     ],
-    followUps: [{ id: 201, author: "Maya", body: "Would this change for regulated teams?" }],
+    followUps: [{ id: "sample-follow-up-1", author: "Maya", body: "Would this change for regulated teams?" }],
   },
   {
-    id: 2,
+    id: "sample-2",
     author: "Maya",
     body: "Can you share a lightweight way to collect concerns from quieter stakeholders before a launch review?",
     status: "delayed",
@@ -118,7 +119,7 @@ const initialQuestions: Question[] = [
     createdAt: daysAgo(1),
     answers: [
       {
-        id: 102,
+        id: "sample-answer-2",
         responder: "Sam, assistant",
         body: "We are grouping examples and will publish a fuller answer after the webinar.",
         upvotes: 9,
@@ -126,12 +127,12 @@ const initialQuestions: Question[] = [
       },
     ],
     followUps: [
-      { id: 202, author: "Anonymous attendee", body: "A template would be helpful here." },
-      { id: 203, author: "Jordan", body: "Especially for cross-functional reviews." },
+      { id: "sample-follow-up-2", author: "Anonymous attendee", body: "A template would be helpful here." },
+      { id: "sample-follow-up-3", author: "Jordan", body: "Especially for cross-functional reviews." },
     ],
   },
   {
-    id: 3,
+    id: "sample-3",
     author: "Jordan",
     body: "What signals tell you that a live Q&A is missing important questions from the room?",
     status: "open",
@@ -158,15 +159,85 @@ const priorityLabels: Record<QuestionPriority, string> = {
 function App() {
   const [activeRole, setActiveRole] = useState<Role>("attendee");
   const [questions, setQuestions] = useState(initialQuestions);
+  const [webinarId, setWebinarId] = useState<string | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState(
+    hasSupabaseConfig ? "Connecting to Supabase..." : "Using local sample data",
+  );
   const [filter, setFilter] = useState<Filter>("top");
   const [questionText, setQuestionText] = useState("");
   const [askAnonymously, setAskAnonymously] = useState(true);
   const [authorName, setAuthorName] = useState("");
-  const [answerDrafts, setAnswerDrafts] = useState<Record<number, string>>({});
+  const [answerDrafts, setAnswerDrafts] = useState<Record<string, string>>({});
 
   const qaWindow = getQaWindow(webinar.startsAt, webinar.qaWindowDaysBefore, webinar.qaWindowDaysAfter);
   const isOpen = isDateWithinWindow(new Date(), qaWindow.opensAt, qaWindow.closesAt);
   const currentRole = roleMeta[activeRole];
+
+  useEffect(() => {
+    async function loadSupabaseData() {
+      if (!supabase) {
+        return;
+      }
+
+      const { data: existingWebinar, error: webinarError } = await supabase
+        .from("webinars")
+        .select("id")
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      if (webinarError) {
+        setConnectionStatus(`Supabase error: ${webinarError.message}`);
+        return;
+      }
+
+      let resolvedWebinar = existingWebinar;
+
+      if (!resolvedWebinar) {
+        const { data: insertedWebinar, error: insertError } = await supabase
+          .from("webinars")
+          .insert({
+            title: webinar.title,
+            host: webinar.host,
+            starts_at: webinar.startsAt.toISOString(),
+            qa_window_days_before: webinar.qaWindowDaysBefore,
+            qa_window_days_after: webinar.qaWindowDaysAfter,
+          })
+          .select("id")
+          .single();
+
+        if (insertError) {
+          setConnectionStatus(`Supabase error: ${insertError.message}`);
+          return;
+        }
+
+        resolvedWebinar = insertedWebinar;
+      }
+
+      setWebinarId(resolvedWebinar.id);
+
+      const { data: questionRows, error: questionError } = await supabase
+        .from("questions")
+        .select(
+          "id, author_name, body, status, priority, upvotes, created_at, answers(id, responder_name, body, upvotes, visible_at, created_at), follow_ups(id, author_name, body, created_at)",
+        )
+        .eq("webinar_id", resolvedWebinar.id)
+        .order("created_at", { ascending: false });
+
+      if (questionError) {
+        setConnectionStatus(`Supabase error: ${questionError.message}`);
+        return;
+      }
+
+      if (questionRows && questionRows.length > 0) {
+        setQuestions(questionRows.map(mapQuestionRow));
+      }
+
+      setConnectionStatus("Connected to Supabase");
+    }
+
+    void loadSupabaseData();
+  }, []);
 
   const sortedQuestions = useMemo(() => {
     const visible = filter === "open" ? questions.filter((question) => question.status === "open") : questions;
@@ -203,7 +274,7 @@ function App() {
 
     setQuestions((current) => [
       {
-        id: Date.now(),
+        id: crypto.randomUUID(),
         author: askAnonymously ? "Anonymous attendee" : authorName.trim() || "Attendee",
         body: trimmed,
         status: "open",
@@ -215,19 +286,39 @@ function App() {
       },
       ...current,
     ]);
+
+    if (supabase && webinarId) {
+      void supabase.from("questions").insert({
+        webinar_id: webinarId,
+        author_name: askAnonymously ? null : authorName.trim() || "Attendee",
+        body: trimmed,
+        status: "open",
+        priority: "community",
+        upvotes: 0,
+      });
+    }
+
     setQuestionText("");
     setFilter("new");
   }
 
-  function upvoteQuestion(questionId: number) {
+  function upvoteQuestion(questionId: string) {
+    const question = questions.find((current) => current.id === questionId);
+
     setQuestions((current) =>
       current.map((question) =>
         question.id === questionId ? { ...question, upvotes: question.upvotes + 1 } : question,
       ),
     );
+
+    if (supabase && question && isUuid(questionId)) {
+      void supabase.from("questions").update({ upvotes: question.upvotes + 1 }).eq("id", questionId);
+    }
   }
 
-  function upvoteAnswer(questionId: number, answerId: number) {
+  function upvoteAnswer(questionId: string, answerId: string) {
+    const answer = questions.flatMap((question) => question.answers).find((current) => current.id === answerId);
+
     setQuestions((current) =>
       current.map((question) =>
         question.id === questionId
@@ -240,9 +331,13 @@ function App() {
           : question,
       ),
     );
+
+    if (supabase && answer && isUuid(answerId)) {
+      void supabase.from("answers").update({ upvotes: answer.upvotes + 1 }).eq("id", answerId);
+    }
   }
 
-  function addFollowUp(questionId: number, body: string) {
+  function addFollowUp(questionId: string, body: string) {
     const trimmed = body.trim();
 
     if (!trimmed) {
@@ -255,36 +350,60 @@ function App() {
           ? {
               ...question,
               priority: question.priority === "host_pick" ? "host_pick" : "needs_followup",
-              followUps: [...question.followUps, { id: Date.now(), author: "Anonymous attendee", body: trimmed }],
+              followUps: [...question.followUps, { id: crypto.randomUUID(), author: "Anonymous attendee", body: trimmed }],
             }
           : question,
       ),
     );
+
+    if (supabase && isUuid(questionId)) {
+      void supabase.from("follow_ups").insert({
+        question_id: questionId,
+        author_name: null,
+        body: trimmed,
+      });
+      void supabase.from("questions").update({ priority: "needs_followup" }).eq("id", questionId);
+    }
   }
 
-  function setQuestionStatus(questionId: number, status: QuestionStatus) {
+  function setQuestionStatus(questionId: string, status: QuestionStatus) {
     setQuestions((current) =>
       current.map((question) => (question.id === questionId ? { ...question, status } : question)),
     );
+
+    if (supabase && isUuid(questionId)) {
+      void supabase.from("questions").update({ status }).eq("id", questionId);
+    }
   }
 
-  function setQuestionPriority(questionId: number, priority: QuestionPriority) {
+  function setQuestionPriority(questionId: string, priority: QuestionPriority) {
     setQuestions((current) =>
       current.map((question) => (question.id === questionId ? { ...question, priority } : question)),
     );
+
+    if (supabase && isUuid(questionId)) {
+      void supabase.from("questions").update({ priority }).eq("id", questionId);
+    }
   }
 
-  function toggleHostPick(questionId: number) {
+  function toggleHostPick(questionId: string) {
+    const nextPriority =
+      questions.find((question) => question.id === questionId)?.priority === "host_pick" ? "community" : "host_pick";
+
     setQuestions((current) =>
       current.map((question) =>
         question.id === questionId
-          ? { ...question, priority: question.priority === "host_pick" ? "community" : "host_pick" }
+          ? { ...question, priority: nextPriority }
           : question,
       ),
     );
+
+    if (supabase && isUuid(questionId)) {
+      void supabase.from("questions").update({ priority: nextPriority }).eq("id", questionId);
+    }
   }
 
-  function publishAnswer(questionId: number, delayed: boolean) {
+  function publishAnswer(questionId: string, delayed: boolean) {
     const body = answerDrafts[questionId]?.trim();
 
     if (!body) {
@@ -300,7 +419,7 @@ function App() {
               answers: [
                 ...question.answers,
                 {
-                  id: Date.now(),
+                  id: crypto.randomUUID(),
                   responder: activeRole === "speaker" ? "Ari, speaker" : "Sam, assistant",
                   body,
                   upvotes: 0,
@@ -311,6 +430,18 @@ function App() {
           : question,
       ),
     );
+
+    if (supabase && isUuid(questionId)) {
+      void supabase.from("answers").insert({
+        question_id: questionId,
+        responder_name: activeRole === "speaker" ? "Ari, speaker" : "Sam, assistant",
+        body,
+        upvotes: 0,
+        visible_at: delayed ? webinar.startsAt.toISOString() : new Date().toISOString(),
+      });
+      void supabase.from("questions").update({ status: delayed ? "delayed" : "answered" }).eq("id", questionId);
+    }
+
     setAnswerDrafts((current) => ({ ...current, [questionId]: "" }));
   }
 
@@ -342,6 +473,7 @@ function App() {
             <p className="eyebrow">{currentRole.eyebrow}</p>
             <h1>{currentRole.title}</h1>
             <p className="intro-copy">{currentRole.copy}</p>
+            <p className={`connection-status ${hasSupabaseConfig ? "online" : "local"}`}>{connectionStatus}</p>
           </div>
           <div className="window-panel" aria-label="Q&A timeline">
             <TimelineItem icon={<CalendarDays size={18} />} label="Opens" value={formatDate(qaWindow.opensAt)} />
@@ -418,7 +550,7 @@ function AttendeeView({
   upvoteAnswer,
   upvoteQuestion,
 }: {
-  addFollowUp: (questionId: number, body: string) => void;
+  addFollowUp: (questionId: string, body: string) => void;
   askAnonymously: boolean;
   authorName: string;
   filter: Filter;
@@ -430,8 +562,8 @@ function AttendeeView({
   setFilter: (value: Filter) => void;
   setQuestionText: (value: string) => void;
   submitQuestion: (event: FormEvent<HTMLFormElement>) => void;
-  upvoteAnswer: (questionId: number, answerId: number) => void;
-  upvoteQuestion: (questionId: number) => void;
+  upvoteAnswer: (questionId: string, answerId: string) => void;
+  upvoteQuestion: (questionId: string) => void;
 }) {
   return (
     <>
@@ -502,11 +634,11 @@ function SpeakerView({
   setAnswerDrafts,
   setQuestionStatus,
 }: {
-  answerDrafts: Record<number, string>;
-  publishAnswer: (questionId: number, delayed: boolean) => void;
+  answerDrafts: Record<string, string>;
+  publishAnswer: (questionId: string, delayed: boolean) => void;
   questions: Question[];
-  setAnswerDrafts: React.Dispatch<React.SetStateAction<Record<number, string>>>;
-  setQuestionStatus: (questionId: number, status: QuestionStatus) => void;
+  setAnswerDrafts: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  setQuestionStatus: (questionId: string, status: QuestionStatus) => void;
 }) {
   return (
     <section className="workspace-grid">
@@ -566,9 +698,9 @@ function AssistantView({
   toggleHostPick,
 }: {
   questions: Question[];
-  setQuestionPriority: (questionId: number, priority: QuestionPriority) => void;
-  setQuestionStatus: (questionId: number, status: QuestionStatus) => void;
-  toggleHostPick: (questionId: number) => void;
+  setQuestionPriority: (questionId: string, priority: QuestionPriority) => void;
+  setQuestionStatus: (questionId: string, status: QuestionStatus) => void;
+  toggleHostPick: (questionId: string) => void;
 }) {
   return (
     <section className="workspace-grid">
@@ -622,9 +754,9 @@ function OrganizerView({
 }: {
   qaWindow: { opensAt: Date; closesAt: Date };
   questions: Question[];
-  setQuestionStatus: (questionId: number, status: QuestionStatus) => void;
+  setQuestionStatus: (questionId: string, status: QuestionStatus) => void;
   stats: { open: number; delayed: number; answered: number; followUps: number; hostPicks: number };
-  toggleHostPick: (questionId: number) => void;
+  toggleHostPick: (questionId: string) => void;
 }) {
   return (
     <section className="workspace-grid">
@@ -755,10 +887,10 @@ function QuestionCard({
   upvoteAnswer,
   upvoteQuestion,
 }: {
-  addFollowUp: (questionId: number, body: string) => void;
+  addFollowUp: (questionId: string, body: string) => void;
   question: Question;
-  upvoteAnswer: (questionId: number, answerId: number) => void;
-  upvoteQuestion: (questionId: number) => void;
+  upvoteAnswer: (questionId: string, answerId: string) => void;
+  upvoteQuestion: (questionId: string) => void;
 }) {
   const [followUpText, setFollowUpText] = useState("");
 
@@ -856,6 +988,62 @@ function Metric({ label, value }: { label: string; value: string }) {
       <strong>{value}</strong>
     </div>
   );
+}
+
+type QuestionRow = {
+  id: string;
+  author_name: string | null;
+  body: string;
+  status: QuestionStatus;
+  priority: QuestionPriority;
+  upvotes: number;
+  created_at: string;
+  answers?: Array<{
+    id: string;
+    responder_name: string;
+    body: string;
+    upvotes: number;
+    visible_at: string | null;
+    created_at: string;
+  }>;
+  follow_ups?: Array<{
+    id: string;
+    author_name: string | null;
+    body: string;
+    created_at: string;
+  }>;
+};
+
+function mapQuestionRow(row: QuestionRow): Question {
+  return {
+    id: row.id,
+    author: row.author_name ?? "Anonymous attendee",
+    body: row.body,
+    status: row.status,
+    priority: row.priority,
+    upvotes: row.upvotes,
+    createdAt: new Date(row.created_at),
+    answers: [...(row.answers ?? [])]
+      .sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime())
+      .map((answer) => ({
+        id: answer.id,
+        responder: answer.responder_name,
+        body: answer.body,
+        upvotes: answer.upvotes,
+        visibleAt: answer.visible_at ? formatDate(new Date(answer.visible_at)) : "Visible now",
+      })),
+    followUps: [...(row.follow_ups ?? [])]
+      .sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime())
+      .map((followUp) => ({
+        id: followUp.id,
+        author: followUp.author_name ?? "Anonymous attendee",
+        body: followUp.body,
+      })),
+  };
+}
+
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function getQaWindow(startsAt: Date, daysBefore: number, daysAfter: number) {

@@ -15,10 +15,11 @@ Introvert-friendly webinar Q&A for collecting thoughtful written questions befor
 
 1. Create a Supabase project.
 2. Run `supabase/schema.sql` in the SQL editor.
-3. Copy `.env.example` to `.env.local`.
-4. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
+3. Run `supabase/policies.sql` in the SQL editor for the public prototype policies.
+4. Copy `.env.example` to `.env.local`.
+5. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
 
-The V1 interface uses local sample state so the full experience works before auth and row-level security policies are added.
+When those variables are present, the app loads the first webinar from Supabase, creates one if none exists, and persists questions, answers, follow-ups, votes, status changes, and host picks. Without them, it uses local sample state.
 
 ## Run locally
 
